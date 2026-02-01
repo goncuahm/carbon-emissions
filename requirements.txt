@@ -1,0 +1,15 @@
+# Core
+python>=3.9
+
+# Data handling
+pandas>=1.5
+numpy>=1.23
+
+# Web app
+streamlit>=1.30
+
+# Visualization
+plotly>=5.18
+
+# Typing / structure (optional but clean)
+typing-extensions>=4.8 
