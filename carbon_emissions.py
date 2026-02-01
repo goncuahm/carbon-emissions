@@ -1,87 +1,175 @@
 import streamlit as st
 import pandas as pd
-import plotly.express as px
+import numpy as np
+from enum import Enum
+from dataclasses import dataclass
+from typing import Dict, List, Optional
 
-from carbon_calculator import (
-    CarbonFootprintCalculator,
-    FuelType
-)
-
+# ============================================================
+# CONFIG
+# ============================================================
 st.set_page_config(
     page_title="EU Carbon Emissions Calculator",
     layout="wide"
 )
 
-st.title("EU Carbon Emissions Calculator")
-st.caption("EU ETS · CSRD · GHG Protocol aligned")
+# ============================================================
+# DATA MODELS
+# ============================================================
+class FuelType(Enum):
+    NATURAL_GAS = "Natural Gas"
+    DIESEL = "Diesel"
+    GASOLINE = "Gasoline"
+    LPG = "LPG"
+    COAL = "Coal"
 
-calc = CarbonFootprintCalculator()
+@dataclass
+class EmissionFactor:
+    value: float
+    unit: str
+    source: str
+    year: int
 
-# -------------------------
-# Scope 1
-# -------------------------
-st.header("Scope 1 — Direct Emissions")
+class EUEmissionFactors:
+    FUEL_FACTORS = {
+        FuelType.NATURAL_GAS: EmissionFactor(1.902, "kg CO₂ / m³", "EU MRR", 2023),
+        FuelType.DIESEL: EmissionFactor(2.676, "kg CO₂ / liter", "EU MRR", 2023),
+        FuelType.GASOLINE: EmissionFactor(2.296, "kg CO₂ / liter", "EU MRR", 2023),
+        FuelType.LPG: EmissionFactor(1.537, "kg CO₂ / liter", "EU MRR", 2023),
+        FuelType.COAL: EmissionFactor(2.35, "kg CO₂ / kg", "EU MRR", 2023),
+    }
 
-col1, col2 = st.columns(2)
+    ELECTRICITY_FACTORS = {
+        "EU_AVERAGE": 0.275,
+        "DE": 0.385,
+        "FR": 0.057,
+        "IT": 0.298,
+        "ES": 0.205,
+        "PL": 0.734,
+        "NL": 0.395,
+        "SE": 0.013,
+    }
 
-with col1:
-    fuel = st.selectbox("Fuel type", [f.name for f in FuelType])
-    quantity = st.number_input("Fuel quantity", min_value=0.0)
+# ============================================================
+# CALCULATORS
+# ============================================================
+class CarbonFootprintCalculator:
+    def __init__(self):
+        self.results = []
 
-with col2:
-    if st.button("Add Scope 1 emission"):
-        result = calc.scope1_calc.calculate_stationary_combustion(
-            fuel_type=FuelType[fuel],
-            quantity=quantity
-        )
-        calc.add_emission_source(result)
-        st.success("Scope 1 emission added")
+    def add(self, result: Dict):
+        self.results.append(result)
 
-# -------------------------
-# Scope 2
-# -------------------------
-st.header("Scope 2 — Electricity")
+    def dataframe(self):
+        if not self.results:
+            return pd.DataFrame()
+        return pd.DataFrame(self.results)
 
-electricity = st.number_input("Electricity consumption (kWh)", min_value=0.0)
-country = st.selectbox(
-    "Country",
-    ["EU_AVERAGE", "DE", "FR", "IT", "ES", "PL", "NL", "BE", "SE", "AT", "DK"]
-)
+    def summary(self):
+        df = self.dataframe()
+        if df.empty:
+            return pd.DataFrame()
+        return df.groupby("Scope")["Emissions (tCO₂e)"].sum().reset_index()
 
-if st.button("Add Scope 2 emission"):
-    result = calc.scope2_calc.calculate_location_based(
-        electricity_kwh=electricity,
-        country_code=country
-    )
-    calc.add_emission_source(result)
-    st.success("Scope 2 emission added")
+    def total(self):
+        s = self.summary()
+        return float(s["Emissions (tCO₂e)"].sum()) if not s.empty else 0.0
 
-# -------------------------
-# Results
-# -------------------------
-st.header("Results")
 
-summary = calc.get_summary()
+# ============================================================
+# STREAMLIT UI
+# ============================================================
+st.title("🌍 EU-Compliant Carbon Emissions Calculator")
+st.caption("Scopes 1, 2, 3 — EU ETS / CSRD / GHG Protocol aligned")
 
-if not summary.empty:
-    summary_df = summary.reset_index()
-    summary_df.columns = ["Scope", "Emissions (tCO₂e)"]
+calculator = CarbonFootprintCalculator()
+ef = EUEmissionFactors()
+
+# ============================================================
+# SCOPE 1
+# ============================================================
+st.header("🔥 Scope 1 — Direct Emissions")
+
+fuel = st.selectbox("Fuel Type", list(FuelType))
+quantity = st.number_input("Fuel Quantity", min_value=0.0)
+
+if st.button("Add Scope 1 Emission"):
+    factor = ef.FUEL_FACTORS[fuel]
+    emissions = quantity * factor.value / 1000
+    calculator.add({
+        "Scope": "Scope 1",
+        "Category": fuel.value,
+        "Activity": quantity,
+        "Unit": factor.unit,
+        "Emission Factor": factor.value,
+        "Emissions (tCO₂e)": emissions
+    })
+    st.success(f"Added {emissions:.2f} tCO₂")
+
+# ============================================================
+# SCOPE 2
+# ============================================================
+st.header("⚡ Scope 2 — Electricity")
+
+country = st.selectbox("Country", list(ef.ELECTRICITY_FACTORS.keys()))
+electricity = st.number_input("Electricity Consumption (kWh)", min_value=0.0)
+
+if st.button("Add Scope 2 Emission"):
+    factor = ef.ELECTRICITY_FACTORS[country]
+    emissions = electricity * factor / 1000
+    calculator.add({
+        "Scope": "Scope 2",
+        "Category": "Electricity",
+        "Activity": electricity,
+        "Unit": "kWh",
+        "Emission Factor": factor,
+        "Emissions (tCO₂e)": emissions
+    })
+    st.success(f"Added {emissions:.2f} tCO₂e")
+
+# ============================================================
+# SCOPE 3
+# ============================================================
+st.header("🚚 Scope 3 — Purchased Goods")
+
+spend = st.number_input("Procurement Spend (€)", min_value=0.0)
+factor_spend = st.number_input("Emission Factor (kg CO₂e / €)", value=0.45)
+
+if st.button("Add Scope 3 Emission"):
+    emissions = spend * factor_spend / 1000
+    calculator.add({
+        "Scope": "Scope 3",
+        "Category": "Purchased Goods",
+        "Activity": spend,
+        "Unit": "EUR",
+        "Emission Factor": factor_spend,
+        "Emissions (tCO₂e)": emissions
+    })
+    st.success(f"Added {emissions:.2f} tCO₂e")
+
+# ============================================================
+# RESULTS
+# ============================================================
+st.header("📊 Results")
+
+df = calculator.dataframe()
+summary = calculator.summary()
+
+if not df.empty:
+    st.subheader("Detailed Emissions Table")
+    st.dataframe(df, use_container_width=True)
 
     st.subheader("Emissions by Scope")
-    st.dataframe(summary_df, use_container_width=True)
+    st.bar_chart(summary.set_index("Scope"))
 
-    fig = px.bar(
-        summary_df,
-        x="Scope",
-        y="Emissions (tCO₂e)",
-        color="Scope",
-        title="Carbon Footprint by Scope"
+    st.subheader("Scope Share")
+    st.pyplot(
+        summary.set_index("Scope")
+        .plot.pie(y="Emissions (tCO₂e)", autopct="%1.1f%%", legend=False)
+        .get_figure()
     )
-    st.plotly_chart(fig, use_container_width=True)
 
-    st.metric(
-        "Total Carbon Footprint",
-        f"{calc.calculate_total_footprint():,.2f} tCO₂e"
-    )
+    st.metric("🌱 Total Carbon Footprint (tCO₂e)", f"{calculator.total():,.2f}")
+
 else:
     st.info("No emissions added yet.")
